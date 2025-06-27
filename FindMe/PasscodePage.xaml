@@ -1,0 +1,149 @@
+﻿<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://xamarin.com/schemas/2014/forms"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="FindMe.PasscodePage"
+             Title="Settings Access"
+             BackgroundColor="#f5f5f5">
+
+    <StackLayout Padding="20" Spacing="20" VerticalOptions="Center">
+        <Label Text="Enter Passcode" 
+               FontSize="24" 
+               HorizontalOptions="Center" 
+               TextColor="Black"
+               Margin="0,0,0,20"/>
+
+        <!-- Lockout message -->
+        <Label x:Name="lblLockoutMessage"
+               TextColor="#FF5252"
+               HorizontalOptions="Center"
+               FontSize="16"
+               IsVisible="false"/>
+
+        <!-- Passcode dots -->
+        <StackLayout Orientation="Horizontal" 
+                     HorizontalOptions="Center" 
+                     Margin="0,0,0,30">
+            <Label x:Name="dot1" 
+                   Text="●" 
+                   FontSize="30" 
+                   TextColor="Gray" 
+                   Margin="5"/>
+            <Label x:Name="dot2" 
+                   Text="●" 
+                   FontSize="30" 
+                   TextColor="Gray" 
+                   Margin="5"/>
+            <Label x:Name="dot3" 
+                   Text="●" 
+                   FontSize="30" 
+                   TextColor="Gray" 
+                   Margin="5"/>
+            <Label x:Name="dot4" 
+                   Text="●" 
+                   FontSize="30" 
+                   TextColor="Gray" 
+                   Margin="5"/>
+        </StackLayout>
+
+        <!-- Number pad -->
+        <Grid x:Name="numPadGrid" HorizontalOptions="Center" WidthRequest="300">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <!-- Numbers -->
+            <Button Text="1" Grid.Row="0" Grid.Column="0" 
+                    BackgroundColor="White" TextColor="Black" 
+                    FontSize="24" CornerRadius="40" 
+                    HeightRequest="70" WidthRequest="70"
+                    Clicked="OnDigitClicked"/>
+            <Button Text="2" Grid.Row="0" Grid.Column="1" 
+                    BackgroundColor="White" TextColor="Black" 
+                    FontSize="24" CornerRadius="40" 
+                    HeightRequest="70" WidthRequest="70"
+                    Clicked="OnDigitClicked"/>
+            <Button Text="3" Grid.Row="0" Grid.Column="2" 
+                    BackgroundColor="White" TextColor="Black" 
+                    FontSize="24" CornerRadius="40" 
+                    HeightRequest="70" WidthRequest="70"
+                    Clicked="OnDigitClicked"/>
+            <Button Text="4" Grid.Row="1" Grid.Column="0" 
+                    BackgroundColor="White" TextColor="Black" 
+                    FontSize="24" CornerRadius="40" 
+                    HeightRequest="70" WidthRequest="70"
+                    Clicked="OnDigitClicked"/>
+            <Button Text="5" Grid.Row="1" Grid.Column="1" 
+                    BackgroundColor="White" TextColor="Black" 
+                    FontSize="24" CornerRadius="40" 
+                    HeightRequest="70" WidthRequest="70"
+                    Clicked="OnDigitClicked"/>
+            <Button Text="6" Grid.Row="1" Grid.Column="2" 
+                    BackgroundColor="White" TextColor="Black" 
+                    FontSize="24" CornerRadius="40" 
+                    HeightRequest="70" WidthRequest="70"
+                    Clicked="OnDigitClicked"/>
+            <Button Text="7" Grid.Row="2" Grid.Column="0" 
+                    BackgroundColor="White" TextColor="Black" 
+                    FontSize="24" CornerRadius="40" 
+                    HeightRequest="70" WidthRequest="70"
+                    Clicked="OnDigitClicked"/>
+            <Button Text="8" Grid.Row="2" Grid.Column="1" 
+                    BackgroundColor="White" TextColor="Black" 
+                    FontSize="24" CornerRadius="40" 
+                    HeightRequest="70" WidthRequest="70"
+                    Clicked="OnDigitClicked"/>
+            <Button Text="9" Grid.Row="2" Grid.Column="2" 
+                    BackgroundColor="White" TextColor="Black" 
+                    FontSize="24" CornerRadius="40" 
+                    HeightRequest="70" WidthRequest="70"
+                    Clicked="OnDigitClicked"/>
+            <Button Text="0" Grid.Row="3" Grid.Column="1" 
+                    BackgroundColor="White" TextColor="Black" 
+                    FontSize="24" CornerRadius="40" 
+                    HeightRequest="70" WidthRequest="70"
+                    Clicked="OnDigitClicked"/>
+            <Button x:Name="btnDelete" Text="⌫" Grid.Row="3" Grid.Column="2" 
+                    BackgroundColor="#f44336" TextColor="White" 
+                    FontSize="24" CornerRadius="40" 
+                    HeightRequest="70" WidthRequest="70"
+                    Clicked="OnDeleteClicked"/>
+            
+            <Button x:Name="btnBiometric" 
+                    Grid.Row="3" Grid.Column="0"
+                    Text="🔒" 
+                    FontSize="24" 
+                    BackgroundColor="#2196F3" 
+                    TextColor="White"
+                    CornerRadius="40"
+                    HeightRequest="70" 
+                    WidthRequest="70"
+                    IsVisible="False"
+                    Clicked="OnBiometricClicked"/>
+        </Grid>
+
+        <Button x:Name="btnChangePasscode" 
+                Text="Change Passcode" 
+                BackgroundColor="#9E9E9E"
+                TextColor="White"
+                CornerRadius="5"
+                Margin="0,20,0,0"
+                Clicked="OnChangePasswordClicked"/>
+
+        <Button x:Name="btnExit" 
+        Text="Exit App" 
+        BackgroundColor="#9E9E9E"
+        TextColor="White"
+        CornerRadius="5"
+        Margin="0,20,0,0"
+        IsVisible="{Binding IsAppStartup}"
+        Clicked="OnExitClicked"/>
+    </StackLayout>
+</ContentPage>

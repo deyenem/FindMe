@@ -1,0 +1,81 @@
+﻿<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://xamarin.com/schemas/2014/forms"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="FindMe.FirstRunSetupPage"
+             Title="Initial Setup"
+             BackgroundColor="#f5f5f5">
+
+    <ScrollView>
+        <StackLayout Padding="20" Spacing="15">
+            <Label Text="Welcome to FindMe Location Tracker" 
+                   FontSize="24" 
+                   HorizontalOptions="Center" 
+                   TextColor="Black"
+                   Margin="0,0,0,20"/>
+
+            <Label Text="Please configure your Telegram settings to continue" 
+                   FontSize="16" 
+                   TextColor="Black"
+                   Margin="0,0,0,20"/>
+
+            <Frame BackgroundColor="White" CornerRadius="10" Padding="15">
+                <StackLayout>
+                    <Label Text="How to create a Telegram Bot:" 
+                           FontSize="16"
+                           FontAttributes="Bold" 
+                           TextColor="Black"/>
+
+                    <Label Text="1. Open Telegram and search for 'BotFather'" 
+                           TextColor="Black"/>
+                    <Label Text="2. Send /newbot to create a new bot" 
+                           TextColor="Black"/>
+                    <Label Text="3. Follow instructions and copy the API token" 
+                           TextColor="Black"/>
+                    <Label Text="4. Start a conversation with your bot" 
+                           TextColor="Black"/>
+                    <Label Text="5. Visit https://api.telegram.org/bot[YOUR_TOKEN]/getUpdates" 
+                           TextColor="Black"/>
+                    <Label Text="6. Send a message to your bot, refresh the page, and find your chat_id" 
+                           TextColor="Black"/>
+                </StackLayout>
+            </Frame>
+
+            <Frame BackgroundColor="White" CornerRadius="10" Padding="15" Margin="0,20,0,0">
+                <StackLayout>
+                    <Label Text="Telegram Bot Token"
+                           TextColor="Black"/>
+                    <Entry x:Name="entryBotToken"
+                           Placeholder="Enter your Telegram bot token" 
+                           PlaceholderColor="Gray"
+                           TextColor="Black"/>
+
+                    <Label Text="Chat ID"
+                           Margin="0,10,0,0"
+                           TextColor="Black"/>
+                    <Entry x:Name="entryChatId"
+                           Placeholder="Enter your Telegram chat ID" 
+                           PlaceholderColor="Gray"
+                           TextColor="Black" 
+                           Keyboard="Numeric"/>
+
+                    <Label Text="Update Interval (ms)"
+                           Margin="0,10,0,0"
+                           TextColor="Black"/>
+                    <Entry x:Name="entryInterval"
+                           Text="60000"
+                           Placeholder="Enter interval in milliseconds" 
+                           PlaceholderColor="Gray"
+                           TextColor="Black" 
+                           Keyboard="Numeric"/>
+
+                    <Button Text="Save and Continue"
+                            BackgroundColor="#4CAF50"
+                            TextColor="White"
+                            CornerRadius="5"
+                            Margin="0,20,0,0"
+                            Clicked="OnSaveClicked"/>
+                </StackLayout>
+            </Frame>
+        </StackLayout>
+    </ScrollView>
+</ContentPage>

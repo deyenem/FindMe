@@ -1,0 +1,55 @@
+﻿<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://xamarin.com/schemas/2014/forms"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="FindMe.MainPage"
+             BackgroundColor="#f5f5f5">
+
+    <StackLayout Padding="20" Spacing="20">
+        <!-- Status Card -->
+        <Frame BackgroundColor="White" CornerRadius="10" Padding="15">
+            <StackLayout>
+                <Label Text="Location Tracking Status" 
+                       TextColor="Black"
+                       FontSize="18" 
+                       FontAttributes="Bold"/>
+                <Label x:Name="txtStatus" 
+                       TextColor="Black"
+                       Text="Service Status: Stopped" 
+                       Margin="0,10,0,0"/>
+            </StackLayout>
+        </Frame>
+
+        <!-- Control Buttons -->
+        <Button x:Name="btnStartService"
+                Text="Start Tracking"
+                BackgroundColor="#4CAF50"
+                TextColor="White"
+                CornerRadius="5"
+                Clicked="OnStartServiceClicked"/>
+
+        <Button x:Name="btnStopService"
+                Text="Stop Tracking"
+                BackgroundColor="#f44336"
+                TextColor="White"
+                CornerRadius="5"
+                IsEnabled="False"
+                Clicked="OnStopServiceClicked"/>
+
+        <Button x:Name="btnShare"
+                Text="Share Location"
+                BackgroundColor="#2196F3"
+                TextColor="White"
+                CornerRadius="5"
+
+                Clicked="OnShareClicked"/>
+
+        <!-- Settings Button -->
+        <Button x:Name="btnSettings"
+                Text="Settings"
+                BackgroundColor="#9E9E9E"
+                TextColor="White"
+                CornerRadius="5"
+                Clicked="OnSettingsClicked"/>
+    </StackLayout>
+
+</ContentPage>
