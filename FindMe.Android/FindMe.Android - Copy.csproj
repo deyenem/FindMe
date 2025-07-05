@@ -112,7 +112,7 @@
     <ProjectReference Include="..\FindMe\FindMe.csproj">
       <Project>{7EA44861-FC48-4F1F-91C0-DCAF5C7C95E4}</Project>
       <Name>FindMe</Name>
-   </ProjectReference>
- </ItemGroup>
- <Import Project="$(MSBuildExtensionsPath)\Xamarin\Android\Xamarin.Android.CSharp.targets" />
+    </ProjectReference>
+  </ItemGroup>
+  <Import Project="$(MSBuildExtensionsPath)\Xamarin\Android\Xamarin.Android.CSharp.targets" />
 </Project>

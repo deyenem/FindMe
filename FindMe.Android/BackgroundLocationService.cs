@@ -10,45 +10,44 @@ using AndroidX.Core.App;
 using System.IO;
 using Newtonsoft.Json;
 using FindMe.Models;
+using AndroidLocation = Android.Locations.Location;
 
 namespace FindMe.Droid
 {
     [Service(ForegroundServiceType = Android.Content.PM.ForegroundService.TypeLocation)]
     public class BackgroundLocationService : Service, ILocationListener
     {
-
         public static bool IsStoppingByUserRequest = false;
 
         public const int SERVICE_NOTIFICATION_ID = 1001;
         private const string NOTIFICATION_CHANNEL_ID = "location_service_channel";
 
-        // Improved implementation with adaptive parameters
-        private const int STATIONARY_UPDATE_INTERVAL_MS = 60000; // 1 minute when not moving much
-        private const int MOVING_UPDATE_INTERVAL_MS = 20000;    // 20 seconds when actively moving
-        private const float SIGNIFICANT_MOVEMENT_METERS = 25;    // Consider movement significant at 25m
+        private const int STATIONARY_UPDATE_INTERVAL_MS = 60000;
+        private const int MOVING_UPDATE_INTERVAL_MS = 20000;
+        private const float SIGNIFICANT_MOVEMENT_METERS = 25;
 
-        private Location lastSignificantLocation;
+        private AndroidLocation lastSignificantLocation;
         private int currentUpdateInterval = STATIONARY_UPDATE_INTERVAL_MS;
 
         private LocationManager locationManager;
         private Timer telegramTimer;
+        private Timer dailyGeoJsonTimer;
         private HttpClient httpClient;
         private string currentLocation = "Unknown";
         private PowerManager.WakeLock wakeLock;
-        // Add a new flag to track if we're actively processing
         private bool isProcessingLocation = false;
 
-        // Use instance variables instead of constants
+        private GeoJsonManager geoJsonManager;
+        private TelegramCommandHandler commandHandler;
+
         private string telegramBotToken;
         private string chatId;
         private string Interval;
 
-        // Helper for secure storage
         private readonly string settingsFilePath;
 
         public BackgroundLocationService()
         {
-            // Initialize the path for settings file
             settingsFilePath = Path.Combine(System.Environment.GetFolderPath(
                 System.Environment.SpecialFolder.Personal), "secure_settings.json");
         }
@@ -70,9 +69,7 @@ namespace FindMe.Droid
 
             if (!wakeLock.IsHeld && isProcessingLocation)
             {
-                // Set a timeout to release the wake lock if something goes wrong
-                // 30 seconds should be more than enough to process location and send to Telegram
-                wakeLock.Acquire(30000); // 30 seconds timeout
+                wakeLock.Acquire(30000);
             }
         }
 
@@ -86,16 +83,24 @@ namespace FindMe.Droid
 
         public override StartCommandResult OnStartCommand(Intent intent, StartCommandFlags flags, int startId)
         {
-            // At the start of the method, add:
             var preferences = Android.Preferences.PreferenceManager.GetDefaultSharedPreferences(this);
             var editor = preferences.Edit();
             editor.PutBoolean("is_tracking_service_running", true);
             editor.Apply();
 
-            // Load settings from storage
             LoadSettings();
+            geoJsonManager = new GeoJsonManager(this);
 
-            // Create notification channel for Android 8.0+
+            try
+            {
+                commandHandler = new TelegramCommandHandler(this);
+                commandHandler.Start();
+            }
+            catch
+            {
+                // Silent fail
+            }
+
             if (Build.VERSION.SdkInt >= BuildVersionCodes.O)
             {
                 var channel = new NotificationChannel(
@@ -110,34 +115,29 @@ namespace FindMe.Droid
                 notificationManager.CreateNotificationChannel(channel);
             }
 
-            // Create notification for foreground service
             var notification = BuildNotification("Location tracking active", "Getting location...");
             StartForeground(SERVICE_NOTIFICATION_ID, notification);
 
-            // Initialize HTTP client
             httpClient = new HttpClient();
 
-            // Initialize timer
             telegramTimer = new Timer(int.Parse(Interval));
             telegramTimer.Elapsed += TelegramTimer_Elapsed;
             telegramTimer.Start();
 
-            // Initialize location manager
+            SetupDailyGeoJsonTimer();
+
             locationManager = GetSystemService(LocationService) as LocationManager;
 
-            // Request location updates if permission is granted
             if (CheckSelfPermission(Android.Manifest.Permission.AccessFineLocation) == Android.Content.PM.Permission.Granted)
             {
                 try
                 {
-                    // Start with more conservative interval
                     locationManager.RequestLocationUpdates(
                         LocationManager.GpsProvider,
                         currentUpdateInterval,
                         SIGNIFICANT_MOVEMENT_METERS,
                         this);
 
-                    // Also get initial location
                     var lastKnownLocation = locationManager.GetLastKnownLocation(LocationManager.GpsProvider);
                     if (lastKnownLocation != null)
                     {
@@ -147,15 +147,106 @@ namespace FindMe.Droid
                 }
                 catch (Exception ex)
                 {
-                    // Update notification with error
                     var errorNotification = BuildNotification("Location Error", ex.Message);
                     var notificationManager = NotificationManagerCompat.From(this);
                     notificationManager.Notify(SERVICE_NOTIFICATION_ID, errorNotification);
                 }
             }
 
-            // Restart if killed
             return StartCommandResult.Sticky;
+        }
+
+        private void SetupDailyGeoJsonTimer()
+        {
+            var now = DateTime.Now;
+            var nextMidnight = now.Date.AddDays(1);
+            var timeUntilMidnight = nextMidnight - now;
+
+            dailyGeoJsonTimer = new Timer(timeUntilMidnight.TotalMilliseconds);
+            dailyGeoJsonTimer.Elapsed += DailyGeoJsonTimer_Elapsed;
+            dailyGeoJsonTimer.AutoReset = false;
+            dailyGeoJsonTimer.Start();
+        }
+
+        private async void DailyGeoJsonTimer_Elapsed(object sender, ElapsedEventArgs e)
+        {
+            try
+            {
+                var yesterday = DateTime.Now.AddDays(-1);
+                await SendDailyGeoJsonReport(yesterday);
+
+                await geoJsonManager.CleanupOldFiles(30);
+
+                dailyGeoJsonTimer.Interval = TimeSpan.FromDays(1).TotalMilliseconds;
+                dailyGeoJsonTimer.AutoReset = true;
+                dailyGeoJsonTimer.Start();
+            }
+            catch
+            {
+                // Silent fail
+            }
+        }
+
+        private async Task SendDailyGeoJsonReport(DateTime date)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(telegramBotToken) || string.IsNullOrEmpty(chatId))
+                {
+                    return;
+                }
+
+                var geoJsonContent = await geoJsonManager.GenerateGeoJsonForDate(date);
+
+                if (string.IsNullOrEmpty(geoJsonContent))
+                {
+                    await SendMessageToTelegram($"No location data available for {date:yyyy-MM-dd}");
+                    return;
+                }
+
+                var tempFile = Path.Combine(Path.GetTempPath(), $"location_report_{date:yyyy-MM-dd}.geojson");
+                await File.WriteAllTextAsync(tempFile, geoJsonContent);
+
+                await SendFileToTelegram(tempFile, $"Daily location report for {date:yyyy-MM-dd}");
+
+                if (File.Exists(tempFile))
+                {
+                    File.Delete(tempFile);
+                }
+            }
+            catch
+            {
+                // Silent fail
+            }
+        }
+
+        private async Task SendFileToTelegram(string filePath, string caption)
+        {
+            try
+            {
+                if (!File.Exists(filePath))
+                {
+                    return;
+                }
+
+                using (var form = new MultipartFormDataContent())
+                {
+                    var fileBytes = await File.ReadAllBytesAsync(filePath);
+                    var fileContent = new ByteArrayContent(fileBytes);
+                    fileContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/geo+json");
+                    form.Add(fileContent, "document", Path.GetFileName(filePath));
+
+                    form.Add(new StringContent(chatId), "chat_id");
+                    form.Add(new StringContent(caption), "caption");
+
+                    string apiUrl = $"https://api.telegram.org/bot{telegramBotToken}/sendDocument";
+                    var response = await httpClient.PostAsync(apiUrl, form);
+                }
+            }
+            catch
+            {
+                // Silent fail
+            }
         }
 
         private void LoadSettings()
@@ -167,7 +258,6 @@ namespace FindMe.Droid
                     var json = File.ReadAllText(settingsFilePath);
                     var settings = JsonConvert.DeserializeObject<AppSettings>(json);
 
-                    // Only use settings if all fields are present
                     if (!string.IsNullOrEmpty(settings?.BotToken) &&
                         !string.IsNullOrEmpty(settings?.ChatId) &&
                         !string.IsNullOrEmpty(settings?.Interval))
@@ -179,31 +269,20 @@ namespace FindMe.Droid
                     }
                 }
 
-                // If we get here, we couldn't load valid settings
-                // Instead of hardcoded fallbacks, disable functionality
                 telegramBotToken = null;
                 chatId = null;
-                Interval = "60000"; // Just set a reasonable default interval
+                Interval = "60000";
 
-                // Log this issue
-                Android.Util.Log.Error("BackgroundLocationService",
-                    "Failed to load Telegram settings. Telegram updates disabled.");
-
-                // Update notification to inform user
                 var notification = BuildNotification(
                     "Configuration Issue",
                     "Telegram integration disabled. Please set up in app.");
                 NotificationManagerCompat.From(this).Notify(SERVICE_NOTIFICATION_ID, notification);
             }
-            catch (Exception ex)
+            catch
             {
-                // Same as above, disable functionality instead of using hardcoded values
                 telegramBotToken = null;
                 chatId = null;
                 Interval = "60000";
-
-                Android.Util.Log.Error("BackgroundLocationService",
-                    $"Error loading settings: {ex.Message}");
             }
         }
 
@@ -216,7 +295,6 @@ namespace FindMe.Droid
             var notificationBuilder = new NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
                 .SetContentTitle(title)
                 .SetContentText(text)
-                //.SetSmallIcon(Resource.Drawable.location_pin) // Use a proper location icon
                 .SetSmallIcon(Resource.Color.tooltip_background_dark)
                 .SetOngoing(true)
                 .SetContentIntent(pendingIntent);
@@ -224,7 +302,6 @@ namespace FindMe.Droid
             return notificationBuilder.Build();
         }
 
-        // Add this as a class-level field
         private int updateCounter = 0;
         private async void TelegramTimer_Elapsed(object sender, ElapsedEventArgs e)
         {
@@ -237,7 +314,6 @@ namespace FindMe.Droid
 
                 if (credentialsAvailable)
                 {
-                    // Existing flow with credentials
                     if (currentLocation != "Unknown")
                     {
                         bool inMovingMode = currentUpdateInterval == MOVING_UPDATE_INTERVAL_MS;
@@ -259,7 +335,6 @@ namespace FindMe.Droid
                 }
                 else
                 {
-                    // No credentials available
                     var notification = BuildNotification(
                         "Location tracking active",
                         $"Last update: {DateTime.Now.ToString("HH:mm:ss")} - {currentLocation} (Telegram disabled)");
@@ -267,10 +342,9 @@ namespace FindMe.Droid
                     notificationManager.Notify(SERVICE_NOTIFICATION_ID, notification);
                 }
             }
-            catch (Exception ex)
+            catch
             {
-                // Log the exception
-                Android.Util.Log.Error("TelegramTimer", ex.ToString());
+                // Silent fail
             }
             finally
             {
@@ -283,22 +357,12 @@ namespace FindMe.Droid
         {
             try
             {
-                // Check if credentials are available
                 if (string.IsNullOrEmpty(telegramBotToken) || string.IsNullOrEmpty(chatId) || string.IsNullOrEmpty(Interval))
                 {
-                    // Can't send without credentials
                     return;
                 }
 
-                // Parse the location text to get latitude and longitude
                 string[] coordinates = currentLocation.Split(',');
-                //string message = currentLocation.ToString();
-
-
-                //string apiUrlMessage_ = $"https://api.telegram.org/bot{telegramBotToken}/sendMessage?chat_id={chatId}&&text={message}";
-
-                //// Send the request
-                //await httpClient.GetAsync(apiUrlMessage_);
 
                 if (coordinates.Length != 2)
                 {
@@ -311,44 +375,36 @@ namespace FindMe.Droid
                     return;
                 }
 
-                // Telegram Bot API endpoint for sending location
                 string apiUrl = $"https://api.telegram.org/bot{telegramBotToken}/sendLocation?chat_id={chatId}&latitude={latitude}&longitude={longitude}";
-                //string apiUrl = $"https://api.telegram.org/bot{telegramBotToken}/sendLocation?chat_id={chatId}&latitude={strlatitude}&longitude={strlongitude}";
 
-
-                // Send the request
                 await httpClient.GetAsync(apiUrl);
-                //await httpClient.GetAsync(apiUrlTest);
             }
-            catch (Exception)
+            catch
             {
-                // Silent failure - we'll try again next time
+                // Silent fail
             }
         }
 
-        private async Task SendMessageToTelegram()
+        private async Task SendMessageToTelegram(string message = "Location+Unknown!")
         {
             try
             {
-                // Check if credentials are available
                 if (string.IsNullOrEmpty(telegramBotToken) || string.IsNullOrEmpty(chatId) || string.IsNullOrEmpty(Interval))
                 {
-                    // Can't send without credentials
                     return;
                 }
 
-                string apiUrlMessage = $"https://api.telegram.org/bot{telegramBotToken}/sendMessage?chat_id={chatId}&&text=Location+Unknown!";
+                string apiUrlMessage = $"https://api.telegram.org/bot{telegramBotToken}/sendMessage?chat_id={chatId}&text={message}";
 
-                // Send the request
                 await httpClient.GetAsync(apiUrlMessage);
             }
-            catch (Exception)
+            catch
             {
-                // Silent failure - we'll try again next time
+                // Silent fail
             }
         }
 
-        public void OnLocationChanged(Location location)
+        public void OnLocationChanged(AndroidLocation location)
         {
             if (location != null)
             {
@@ -365,51 +421,46 @@ namespace FindMe.Droid
 
                     currentLocation = $"{strlatitude},{strlongitude}";
 
-                    // Adaptive location updating based on movement
+                    geoJsonManager?.AddLocationPoint(location, "automatic");
+
                     if (lastSignificantLocation != null)
                     {
                         float distanceInMeters = location.DistanceTo(lastSignificantLocation);
 
-                        // If significant movement detected
                         if (distanceInMeters > SIGNIFICANT_MOVEMENT_METERS)
                         {
-                            // Store this as our last significant location
                             lastSignificantLocation = location;
 
-                            // If we weren't already in moving mode, switch to it
+                            geoJsonManager?.AddLocationPoint(location, "significant_change");
+
                             if (currentUpdateInterval != MOVING_UPDATE_INTERVAL_MS)
                             {
                                 currentUpdateInterval = MOVING_UPDATE_INTERVAL_MS;
 
-                                // Update the location request parameters
                                 if (CheckSelfPermission(Android.Manifest.Permission.AccessFineLocation) == Android.Content.PM.Permission.Granted)
                                 {
                                     locationManager.RemoveUpdates(this);
                                     locationManager.RequestLocationUpdates(
                                         LocationManager.GpsProvider,
                                         currentUpdateInterval,
-                                        SIGNIFICANT_MOVEMENT_METERS / 2, // Smaller distance when moving
+                                        SIGNIFICANT_MOVEMENT_METERS / 2,
                                         this);
                                 }
                             }
                         }
                         else
                         {
-                            // If we've been stationary for a while and were in moving mode
                             if (currentUpdateInterval != STATIONARY_UPDATE_INTERVAL_MS)
                             {
-                                // After a certain number of stationary updates, switch to stationary mode
-                                // Here you could implement a counter to track consecutive stationary updates
                                 currentUpdateInterval = STATIONARY_UPDATE_INTERVAL_MS;
 
-                                // Update the location request parameters
                                 if (CheckSelfPermission(Android.Manifest.Permission.AccessFineLocation) == Android.Content.PM.Permission.Granted)
                                 {
                                     locationManager.RemoveUpdates(this);
                                     locationManager.RequestLocationUpdates(
                                         LocationManager.GpsProvider,
                                         currentUpdateInterval,
-                                        SIGNIFICANT_MOVEMENT_METERS, // Larger distance when stationary
+                                        SIGNIFICANT_MOVEMENT_METERS,
                                         this);
                                 }
                             }
@@ -430,7 +481,6 @@ namespace FindMe.Droid
 
         public void OnProviderDisabled(string provider)
         {
-            // Update notification to inform user
             var notification = BuildNotification("GPS Disabled", "Please enable GPS for location tracking");
             var notificationManager = NotificationManagerCompat.From(this);
             notificationManager.Notify(SERVICE_NOTIFICATION_ID, notification);
@@ -438,7 +488,6 @@ namespace FindMe.Droid
 
         public void OnProviderEnabled(string provider)
         {
-            // GPS is enabled again, update notification
             var notification = BuildNotification("Location tracking active", "GPS enabled, tracking location");
             var notificationManager = NotificationManagerCompat.From(this);
             notificationManager.Notify(SERVICE_NOTIFICATION_ID, notification);
@@ -446,7 +495,6 @@ namespace FindMe.Droid
 
         public void OnStatusChanged(string provider, Availability status, Bundle extras)
         {
-            // Handle status changed
         }
 
         public override void OnDestroy()
@@ -458,19 +506,30 @@ namespace FindMe.Droid
 
             base.OnDestroy();
 
-            // Always release wake lock on destroy, regardless of processing state
             if (wakeLock != null && wakeLock.IsHeld)
             {
                 wakeLock.Release();
                 wakeLock = null;
             }
 
-            // Clean up resources
             if (telegramTimer != null)
             {
                 telegramTimer.Stop();
                 telegramTimer.Dispose();
                 telegramTimer = null;
+            }
+
+            if (dailyGeoJsonTimer != null)
+            {
+                dailyGeoJsonTimer.Stop();
+                dailyGeoJsonTimer.Dispose();
+                dailyGeoJsonTimer = null;
+            }
+
+            if (commandHandler != null)
+            {
+                commandHandler.Stop();
+                commandHandler = null;
             }
 
             if (locationManager != null)
@@ -485,7 +544,6 @@ namespace FindMe.Droid
                 httpClient = null;
             }
 
-            // Only restart if not explicitly stopped by user
             if (!IsStoppingByUserRequest)
             {
                 var intent = new Intent(ApplicationContext, typeof(BackgroundLocationService));

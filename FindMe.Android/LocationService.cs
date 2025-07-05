@@ -25,7 +25,6 @@ namespace FindMe.Droid
         {
             try
             {
-                // Start the service
                 if (Build.VERSION.SdkInt >= BuildVersionCodes.O)
                 {
                     context.StartForegroundService(serviceIntent);
@@ -35,7 +34,6 @@ namespace FindMe.Droid
                     context.StartService(serviceIntent);
                 }
 
-                // Update preferences
                 var preferences = Android.Preferences.PreferenceManager.GetDefaultSharedPreferences(context);
                 var editor = preferences.Edit();
                 editor.PutBoolean("is_tracking_service_running", true);
@@ -55,7 +53,6 @@ namespace FindMe.Droid
             {
                 BackgroundLocationService.IsStoppingByUserRequest = true;
 
-                // Update preferences
                 var preferences = Android.Preferences.PreferenceManager.GetDefaultSharedPreferences(context);
                 var editor = preferences.Edit();
                 editor.PutBoolean("is_tracking_service_running", false);
@@ -94,7 +91,6 @@ namespace FindMe.Droid
             }
         }
 
-        // Add to LocationService.cs
         public Task<bool> IsTrackingActive()
         {
             var preferences = Android.Preferences.PreferenceManager.GetDefaultSharedPreferences(context);
