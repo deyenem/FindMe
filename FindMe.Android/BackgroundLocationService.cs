@@ -45,6 +45,7 @@ namespace FindMe.Droid
         private string Interval;
 
         private readonly string settingsFilePath;
+        private IntervalUpdateReceiver intervalUpdateReceiver;
 
         public BackgroundLocationService()
         {
@@ -91,10 +92,22 @@ namespace FindMe.Droid
             LoadSettings();
             geoJsonManager = new GeoJsonManager(this);
 
+            // FIXED: Register broadcast receiver for interval updates
+            if (intervalUpdateReceiver == null)
+            {
+                intervalUpdateReceiver = new IntervalUpdateReceiver(this);
+                var filter = new IntentFilter("com.findme.UPDATE_INTERVAL");
+                RegisterReceiver(intervalUpdateReceiver, filter);
+            }
+
             try
             {
-                commandHandler = new TelegramCommandHandler(this);
-                commandHandler.Start();
+                // FIXED: Only start command handler if not already running
+                if (commandHandler == null)
+                {
+                    commandHandler = new TelegramCommandHandler(this);
+                    commandHandler.Start();
+                }
             }
             catch
             {
@@ -120,9 +133,8 @@ namespace FindMe.Droid
 
             httpClient = new HttpClient();
 
-            telegramTimer = new Timer(int.Parse(Interval));
-            telegramTimer.Elapsed += TelegramTimer_Elapsed;
-            telegramTimer.Start();
+            // FIXED: Initialize telegram timer properly
+            InitializeTelegramTimer();
 
             SetupDailyGeoJsonTimer();
 
@@ -154,6 +166,61 @@ namespace FindMe.Droid
             }
 
             return StartCommandResult.Sticky;
+        }
+
+        // FIXED: Separate method to initialize telegram timer
+        private void InitializeTelegramTimer()
+        {
+            try
+            {
+                if (telegramTimer != null)
+                {
+                    telegramTimer.Stop();
+                    telegramTimer.Dispose();
+                }
+
+                int intervalMs = int.Parse(Interval);
+                telegramTimer = new Timer(intervalMs);
+                telegramTimer.Elapsed += TelegramTimer_Elapsed;
+                telegramTimer.Start();
+            }
+            catch
+            {
+                // Fallback to default interval
+                telegramTimer = new Timer(60000);
+                telegramTimer.Elapsed += TelegramTimer_Elapsed;
+                telegramTimer.Start();
+            }
+        }
+
+        // FIXED: Method to update interval without restarting service
+        public void UpdateInterval(int newIntervalMs)
+        {
+            try
+            {
+                Interval = newIntervalMs.ToString();
+
+                // Update settings
+                var settings = LoadSettingsFromFile();
+                if (settings != null)
+                {
+                    settings.Interval = Interval;
+                    SaveSettingsToFile(settings);
+                }
+
+                // Restart telegram timer with new interval
+                InitializeTelegramTimer();
+
+                // Update notification
+                var notification = BuildNotification("Location tracking active",
+                    $"Interval updated to {newIntervalMs}ms - {currentLocation}");
+                var notificationManager = NotificationManagerCompat.From(this);
+                notificationManager.Notify(SERVICE_NOTIFICATION_ID, notification);
+            }
+            catch
+            {
+                // Silent fail
+            }
         }
 
         private void SetupDailyGeoJsonTimer()
@@ -283,6 +350,37 @@ namespace FindMe.Droid
                 telegramBotToken = null;
                 chatId = null;
                 Interval = "60000";
+            }
+        }
+
+        // FIXED: Add methods for reading/writing settings
+        private AppSettings LoadSettingsFromFile()
+        {
+            try
+            {
+                if (File.Exists(settingsFilePath))
+                {
+                    var json = File.ReadAllText(settingsFilePath);
+                    return JsonConvert.DeserializeObject<AppSettings>(json);
+                }
+            }
+            catch
+            {
+                // Silent fail
+            }
+            return null;
+        }
+
+        private void SaveSettingsToFile(AppSettings settings)
+        {
+            try
+            {
+                var json = JsonConvert.SerializeObject(settings);
+                File.WriteAllText(settingsFilePath, json);
+            }
+            catch
+            {
+                // Silent fail
             }
         }
 
@@ -421,48 +519,47 @@ namespace FindMe.Droid
 
                     currentLocation = $"{strlatitude},{strlongitude}";
 
-                    geoJsonManager?.AddLocationPoint(location, "automatic");
+                    // Save location data
+                    _ = Task.Run(() => {
+                        try
+                        {
+                            geoJsonManager.AddLocationPoint(location, "automatic");
+                        }
+                        catch
+                        {
+                            // Silent fail
+                        }
+                    });
 
+                    // Determine if we should adjust update frequency based on movement
                     if (lastSignificantLocation != null)
                     {
-                        float distanceInMeters = location.DistanceTo(lastSignificantLocation);
+                        float distanceFromLast = location.DistanceTo(lastSignificantLocation);
 
-                        if (distanceInMeters > SIGNIFICANT_MOVEMENT_METERS)
+                        if (distanceFromLast > SIGNIFICANT_MOVEMENT_METERS)
                         {
+                            currentUpdateInterval = MOVING_UPDATE_INTERVAL_MS;
                             lastSignificantLocation = location;
-
-                            geoJsonManager?.AddLocationPoint(location, "significant_change");
-
-                            if (currentUpdateInterval != MOVING_UPDATE_INTERVAL_MS)
-                            {
-                                currentUpdateInterval = MOVING_UPDATE_INTERVAL_MS;
-
-                                if (CheckSelfPermission(Android.Manifest.Permission.AccessFineLocation) == Android.Content.PM.Permission.Granted)
-                                {
-                                    locationManager.RemoveUpdates(this);
-                                    locationManager.RequestLocationUpdates(
-                                        LocationManager.GpsProvider,
-                                        currentUpdateInterval,
-                                        SIGNIFICANT_MOVEMENT_METERS / 2,
-                                        this);
-                                }
-                            }
                         }
                         else
                         {
-                            if (currentUpdateInterval != STATIONARY_UPDATE_INTERVAL_MS)
-                            {
-                                currentUpdateInterval = STATIONARY_UPDATE_INTERVAL_MS;
+                            currentUpdateInterval = STATIONARY_UPDATE_INTERVAL_MS;
+                        }
 
-                                if (CheckSelfPermission(Android.Manifest.Permission.AccessFineLocation) == Android.Content.PM.Permission.Granted)
-                                {
-                                    locationManager.RemoveUpdates(this);
-                                    locationManager.RequestLocationUpdates(
-                                        LocationManager.GpsProvider,
-                                        currentUpdateInterval,
-                                        SIGNIFICANT_MOVEMENT_METERS,
-                                        this);
-                                }
+                        if (locationManager != null)
+                        {
+                            try
+                            {
+                                locationManager.RemoveUpdates(this);
+                                locationManager.RequestLocationUpdates(
+                                    LocationManager.GpsProvider,
+                                    currentUpdateInterval,
+                                    SIGNIFICANT_MOVEMENT_METERS,
+                                    this);
+                            }
+                            catch
+                            {
+                                // Silent fail
                             }
                         }
                     }
@@ -470,6 +567,10 @@ namespace FindMe.Droid
                     {
                         lastSignificantLocation = location;
                     }
+                }
+                catch
+                {
+                    // Silent fail
                 }
                 finally
                 {
@@ -479,18 +580,16 @@ namespace FindMe.Droid
             }
         }
 
-        public void OnProviderDisabled(string provider)
-        {
-            var notification = BuildNotification("GPS Disabled", "Please enable GPS for location tracking");
-            var notificationManager = NotificationManagerCompat.From(this);
-            notificationManager.Notify(SERVICE_NOTIFICATION_ID, notification);
-        }
-
         public void OnProviderEnabled(string provider)
         {
-            var notification = BuildNotification("Location tracking active", "GPS enabled, tracking location");
-            var notificationManager = NotificationManagerCompat.From(this);
-            notificationManager.Notify(SERVICE_NOTIFICATION_ID, notification);
+            var notification = BuildNotification("Location tracking active", "GPS enabled");
+            NotificationManagerCompat.From(this).Notify(SERVICE_NOTIFICATION_ID, notification);
+        }
+
+        public void OnProviderDisabled(string provider)
+        {
+            var notification = BuildNotification("Location tracking active", "GPS disabled");
+            NotificationManagerCompat.From(this).Notify(SERVICE_NOTIFICATION_ID, notification);
         }
 
         public void OnStatusChanged(string provider, Availability status, Bundle extras)
@@ -505,6 +604,20 @@ namespace FindMe.Droid
             editor.Apply();
 
             base.OnDestroy();
+
+            // FIXED: Unregister broadcast receiver
+            if (intervalUpdateReceiver != null)
+            {
+                try
+                {
+                    UnregisterReceiver(intervalUpdateReceiver);
+                    intervalUpdateReceiver = null;
+                }
+                catch
+                {
+                    // Silent fail
+                }
+            }
 
             if (wakeLock != null && wakeLock.IsHeld)
             {
@@ -548,6 +661,26 @@ namespace FindMe.Droid
             {
                 var intent = new Intent(ApplicationContext, typeof(BackgroundLocationService));
                 StartService(intent);
+            }
+        }
+    }
+
+    // FIXED: Add broadcast receiver class for interval updates
+    public class IntervalUpdateReceiver : BroadcastReceiver
+    {
+        private readonly BackgroundLocationService service;
+
+        public IntervalUpdateReceiver(BackgroundLocationService service)
+        {
+            this.service = service;
+        }
+
+        public override void OnReceive(Context context, Intent intent)
+        {
+            if (intent.Action == "com.findme.UPDATE_INTERVAL")
+            {
+                int newInterval = intent.GetIntExtra("new_interval", 60000);
+                service.UpdateInterval(newInterval);
             }
         }
     }

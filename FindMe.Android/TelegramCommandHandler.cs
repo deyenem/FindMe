@@ -23,6 +23,12 @@ namespace FindMe.Droid
         private Context context;
         private GeoJsonManager geoJsonManager;
 
+        // Static variables to prevent infinite loops and message spam
+        private static DateTime lastIntervalUpdate = DateTime.MinValue;
+        private static DateTime lastStartupMessage = DateTime.MinValue;
+        private const int INTERVAL_UPDATE_COOLDOWN_SECONDS = 30;
+        private const int STARTUP_MESSAGE_COOLDOWN_SECONDS = 60;
+
         public TelegramCommandHandler(Context context)
         {
             this.context = context;
@@ -43,10 +49,15 @@ namespace FindMe.Droid
                 {
                     commandCheckTimer = new Timer(CheckForCommands, null, 0, 10000);
 
-                    _ = Task.Run(async () => {
-                        await Task.Delay(2000);
-                        await SendTelegramMessage(settings.BotToken, settings.ChatId, "🤖 FindMe service started");
-                    });
+                    // Only send startup message if enough time has passed since last one
+                    if ((DateTime.Now - lastStartupMessage).TotalSeconds > STARTUP_MESSAGE_COOLDOWN_SECONDS)
+                    {
+                        lastStartupMessage = DateTime.Now;
+                        _ = Task.Run(async () => {
+                            await Task.Delay(2000);
+                            await SendTelegramMessage(settings.BotToken, settings.ChatId, "🤖 FindMe service started");
+                        });
+                    }
                 }
             }
             catch
@@ -130,21 +141,34 @@ namespace FindMe.Droid
                 switch (cmd)
                 {
                     case "/interval":
+                        // FIXED: Prevent rapid interval changes that cause infinite loops
+                        if ((DateTime.Now - lastIntervalUpdate).TotalSeconds < INTERVAL_UPDATE_COOLDOWN_SECONDS)
+                        {
+                            response = $"⏱️ Please wait {INTERVAL_UPDATE_COOLDOWN_SECONDS} seconds between interval changes";
+                            break;
+                        }
+
                         if (!string.IsNullOrEmpty(param) && int.TryParse(param, out int interval))
                         {
+                            lastIntervalUpdate = DateTime.Now;
+
                             var Interval = interval.ToString();
                             currentSettings.Interval = Interval;
 
+                            // Save settings without restarting services
                             SaveSettings(currentSettings);
-                            StopLocationService();
-                            await StopTracking();
                             await SecureStorage.SetAsync("Interval", Interval);
-                            StartLocationService();
-                            response = $"Interval updated to {interval} milliseconds";
+
+                            // Send broadcast to update existing service interval
+                            var intent = new Intent("com.findme.UPDATE_INTERVAL");
+                            intent.PutExtra("new_interval", interval);
+                            context.SendBroadcast(intent);
+
+                            response = $"⏱️ Interval updated to {interval} milliseconds. Changes will take effect shortly.";
                         }
                         else
                         {
-                            response = "Please specify a valid interval in milliseconds";
+                            response = "❌ Please specify a valid interval in milliseconds";
                         }
                         break;
 
@@ -178,8 +202,7 @@ namespace FindMe.Droid
                             currentSettings.BotToken = botToken;
                             SaveSettings(currentSettings);
                             await SecureStorage.SetAsync("bot_token", botToken);
-                            StartLocationService();
-                            response = "🔑 Bot token updated";
+                            response = "🔑 Bot token updated. Please restart tracking to apply changes.";
                         }
                         else
                         {
@@ -195,8 +218,7 @@ namespace FindMe.Droid
                             currentSettings.ChatId = chatId;
                             SaveSettings(currentSettings);
                             await SecureStorage.SetAsync("chat_id", chatId);
-                            StartLocationService();
-                            response = "💬 Chat ID updated";
+                            response = "💬 Chat ID updated. Please restart tracking to apply changes.";
                         }
                         else
                         {
