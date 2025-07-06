@@ -26,8 +26,10 @@ namespace FindMe.Droid
         // Static variables to prevent infinite loops and message spam
         private static DateTime lastIntervalUpdate = DateTime.MinValue;
         private static DateTime lastStartupMessage = DateTime.MinValue;
+        private static DateTime lastRestartCommand = DateTime.MinValue;
         private const int INTERVAL_UPDATE_COOLDOWN_SECONDS = 30;
         private const int STARTUP_MESSAGE_COOLDOWN_SECONDS = 60;
+        private const int RESTART_COMMAND_COOLDOWN_SECONDS = 120; // 2 minutes cooldown
 
         public TelegramCommandHandler(Context context)
         {
@@ -49,14 +51,28 @@ namespace FindMe.Droid
                 {
                     commandCheckTimer = new Timer(CheckForCommands, null, 0, 10000);
 
-                    // Only send startup message if enough time has passed since last one
-                    if ((DateTime.Now - lastStartupMessage).TotalSeconds > STARTUP_MESSAGE_COOLDOWN_SECONDS)
+                    // Check if startup message should be suppressed (for restarts)
+                    var preferences = Android.Preferences.PreferenceManager.GetDefaultSharedPreferences(context);
+                    bool suppressStartup = preferences.GetBoolean("suppress_next_startup_message", false);
+
+                    if (suppressStartup)
                     {
-                        lastStartupMessage = DateTime.Now;
-                        _ = Task.Run(async () => {
-                            await Task.Delay(2000);
-                            await SendTelegramMessage(settings.BotToken, settings.ChatId, "🤖 FindMe service started");
-                        });
+                        // Clear the suppression flag
+                        var editor = preferences.Edit();
+                        editor.PutBoolean("suppress_next_startup_message", false);
+                        editor.Apply();
+                    }
+                    else
+                    {
+                        // Only send startup message if enough time has passed since last one AND not suppressed
+                        if ((DateTime.Now - lastStartupMessage).TotalSeconds > STARTUP_MESSAGE_COOLDOWN_SECONDS)
+                        {
+                            lastStartupMessage = DateTime.Now;
+                            _ = Task.Run(async () => {
+                                await Task.Delay(2000);
+                                await SendTelegramMessage(settings.BotToken, settings.ChatId, "🤖 FindMe service started");
+                            });
+                        }
                     }
                 }
             }
@@ -196,16 +212,34 @@ namespace FindMe.Droid
                         break;
 
                     case "/restart":
+                        // Check cooldown to prevent rapid restart loops
+                        if ((DateTime.Now - lastRestartCommand).TotalSeconds < RESTART_COMMAND_COOLDOWN_SECONDS)
+                        {
+                            int remainingCooldown = RESTART_COMMAND_COOLDOWN_SECONDS - (int)(DateTime.Now - lastRestartCommand).TotalSeconds;
+                            response = $"⏳ Please wait {remainingCooldown} seconds before restarting again.";
+                            break;
+                        }
+
                         if (IsServiceRunning())
                         {
+                            lastRestartCommand = DateTime.Now;
                             response = "🔄 Restarting location tracking service...";
                             await SendTelegramMessage(currentSettings.BotToken, currentSettings.ChatId, response);
+
+                            // Set a flag to suppress startup message on restart
+                            var preferences = Android.Preferences.PreferenceManager.GetDefaultSharedPreferences(context);
+                            var editor = preferences.Edit();
+                            editor.PutBoolean("suppress_next_startup_message", true);
+                            editor.Apply();
+
+                            // Stop the current command handler first
+                            Stop();
 
                             // Stop the current service
                             StopLocationService();
 
                             // Wait a moment for clean shutdown
-                            await Task.Delay(2000);
+                            await Task.Delay(3000);
 
                             // Start the service again
                             StartLocationService();
@@ -251,36 +285,34 @@ namespace FindMe.Droid
                         break;
 
                     case "/report":
-                        if (!string.IsNullOrEmpty(param) && DateTime.TryParseExact(param, "yyyy-MM-dd", null,
-                            System.Globalization.DateTimeStyles.None, out DateTime reportDate))
+                        if (!string.IsNullOrEmpty(param) && DateTime.TryParse(param, out DateTime reportDate))
                         {
                             await SendGeoJsonReport(reportDate, currentSettings);
-                            response = $"📊 Generating report for {param}...";
+                            return;
                         }
                         else
                         {
-                            response = "❌ Please specify date in YYYY-MM-DD format (e.g., /report 2025-06-26)";
+                            response = "❌ Please specify a valid date in YYYY-MM-DD format";
                         }
                         break;
 
                     case "/today":
                         await SendGeoJsonReport(DateTime.Today, currentSettings);
-                        response = "📊 Generating today's report...";
-                        break;
+                        return;
 
                     case "/yesterday":
                         await SendGeoJsonReport(DateTime.Today.AddDays(-1), currentSettings);
-                        response = "📊 Generating yesterday's report...";
-                        break;
+                        return;
 
                     case "/files":
                         var availableFiles = geoJsonManager.GetAvailableDataFiles();
                         if (availableFiles.Count > 0)
                         {
                             response = $"📁 Available data files ({availableFiles.Count}):\n";
-                            foreach (var file in availableFiles.Take(10))
+                            var filesToShow = availableFiles.Take(10);
+                            foreach (var file in filesToShow)
                             {
-                                response += $"• {file}\n";
+                                response += $"📄 {Path.GetFileNameWithoutExtension(file)}\n";
                             }
                             if (availableFiles.Count > 10)
                             {
@@ -528,5 +560,33 @@ namespace FindMe.Droid
                 });
             }
         }
+    }
+
+    // Telegram API response models
+    public class TelegramUpdateResponse
+    {
+        public bool Ok { get; set; }
+        public TelegramUpdate[] Result { get; set; }
+    }
+
+    public class TelegramUpdate
+    {
+        [JsonProperty("update_id")]
+        public long UpdateId { get; set; }
+        public TelegramMessage Message { get; set; }
+    }
+
+    public class TelegramMessage
+    {
+        [JsonProperty("message_id")]
+        public long MessageId { get; set; }
+        public TelegramChat Chat { get; set; }
+        public string Text { get; set; }
+    }
+
+    public class TelegramChat
+    {
+        public long Id { get; set; }
+        public string Type { get; set; }
     }
 }
