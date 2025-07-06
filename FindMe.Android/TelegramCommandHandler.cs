@@ -126,6 +126,7 @@ namespace FindMe.Droid
                     "/status - Get current settings and stats\n" +
                     "/start - Start tracking\n" +
                     "/stop - Stop tracking\n" +
+                    "/restart - Restart tracking service\n" +
                     "/token [newtoken] - Change bot token\n" +
                     "/chatid [newchatid] - Change chat ID\n" +
                     "/report [date] - Get GeoJSON report for specific date (YYYY-MM-DD)\n" +
@@ -192,6 +193,29 @@ namespace FindMe.Droid
                         StopLocationService();
                         await StopTracking();
                         response = "⏹️ Location tracking stopped";
+                        break;
+
+                    case "/restart":
+                        if (IsServiceRunning())
+                        {
+                            response = "🔄 Restarting location tracking service...";
+                            await SendTelegramMessage(currentSettings.BotToken, currentSettings.ChatId, response);
+
+                            // Stop the current service
+                            StopLocationService();
+
+                            // Wait a moment for clean shutdown
+                            await Task.Delay(2000);
+
+                            // Start the service again
+                            StartLocationService();
+
+                            response = "✅ Location tracking service restarted successfully!";
+                        }
+                        else
+                        {
+                            response = "❌ Service is not currently running. Use /start to begin tracking.";
+                        }
                         break;
 
                     case "/token":
@@ -465,6 +489,7 @@ namespace FindMe.Droid
                 var intent = new Intent(context, typeof(BackgroundLocationService));
                 context.StopService(intent);
 
+                // Update preference to reflect service stopped
                 var preferences = Android.Preferences.PreferenceManager.GetDefaultSharedPreferences(context);
                 var editor = preferences.Edit();
                 editor.PutBoolean("is_tracking_service_running", false);
